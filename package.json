@@ -1,0 +1,31 @@
+{
+  "name": "zorteam-hr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zo'r team — hodimlarni nazorat qilish va boshqarish tizimi",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@zorteam/api & npm run dev --workspace=@zorteam/web",
+    "dev:api": "npm run dev --workspace=@zorteam/api",
+    "dev:web": "npm run dev --workspace=@zorteam/web",
+    "build": "npm run build --workspace=@zorteam/api && npm run build --workspace=@zorteam/web",
+    "db:generate": "prisma generate --schema apps/api/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema apps/api/prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+    "db:push": "prisma db push --schema apps/api/prisma/schema.prisma",
+    "db:studio": "prisma studio --schema apps/api/prisma/schema.prisma",
+    "db:seed": "tsx apps/api/prisma/seed.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.1": true,
+    "prisma@6.19.3": true,
+    "sharp@0.34.5": true
+  }
+}

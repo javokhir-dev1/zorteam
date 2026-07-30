@@ -1,0 +1,994 @@
+// ============================================================
+//  Zo'r team — Hodimlarni nazorat qilish va boshqarish tizimi
+//  Ma'lumotlar bazasi sxemasi (PostgreSQL)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+//  1. HODIMLAR, BO'LIMLAR, HUQUQLAR
+// ============================================================
+
+enum SystemRole {
+  ADMIN // Tizim administratori — hamma narsa
+  APPROVER // Tasdiqlovchi rahbar — yo'qlik so'rovlarini tasdiqlaydi
+  DEPT_HEAD // Bo'lim rahbari
+  EMPLOYEE // Oddiy hodim
+  VIEWER // Kuzatuvchi (rahbariyat) — faqat o'qiydi
+}
+
+enum UserStatus {
+  ACTIVE // Ishlayapti
+  SUSPENDED // Vaqtincha to'xtatilgan
+  DISMISSED // Ishdan bo'shagan
+}
+
+enum DepartmentType {
+  DEPARTMENT // Oddiy bo'lim (operatorlar, montaj, dizayn...)
+  PRODUCTION // Prodakshn (ko'rsatuvlar ishlab chiqaruvchi jamoa)
+}
+
+model Department {
+  id        String         @id @default(cuid())
+  name      String
+  code      String         @unique
+  type      DepartmentType @default(DEPARTMENT)
+  parentId  String?
+  parent    Department?    @relation("DepartmentTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Department[]   @relation("DepartmentTree")
+
+  // Bo'lim uchun standart ish grafigi (hodimda alohida grafik bo'lsa u ustun turadi)
+  scheduleId String?
+  schedule   WorkSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users          User[]
+  heads          DepartmentHead[]
+  crewRoles      CrewRole[]
+  shows          Show[]
+  requestsFrom   TaskRequest[]      @relation("TaskFromDepartment")
+  requestsTo     TaskRequest[]      @relation("TaskToDepartment")
+  evaluationRules EvaluationRule[]  @relation("RuleTargetDepartment")
+  evaluatorRules  EvaluationRule[]  @relation("RuleEvaluatorDepartment")
+  registrations   RegistrationRequest[]
+
+  @@index([type])
+  @@index([parentId])
+}
+
+model User {
+  id         String     @id @default(cuid())
+  employeeNo String?    @unique // Tabel raqami
+  fullName   String // Ism sharifi
+  position   String // Vazifasi / lavozimi
+  phone      String?    @unique
+  email      String?    @unique
+  status     UserStatus @default(ACTIVE)
+  roles      SystemRole[] @default([EMPLOYEE])
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  // Shaxsiy ish grafigi — bo'lim grafigidan ustun turadi
+  scheduleId String?
+  schedule   WorkSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  // Admin panelga kirish (faqat panel huquqi borlarda to'ldiriladi)
+  passwordHash String?
+  lastLoginAt  DateTime?
+
+  // Telegram bog'lanishi
+  telegramId       BigInt?   @unique
+  telegramUsername String?
+  telegramLinkedAt DateTime?
+  botBlocked       Boolean   @default(false) // Hodim botni bloklab qo'ygan bo'lsa
+
+  avatarFileId String?
+  avatar       StoredFile? @relation("UserAvatar", fields: [avatarFileId], references: [id], onDelete: SetNull)
+
+  hiredAt   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // --- bog'lanishlar ---
+  headOf             DepartmentHead[]
+  inviteCodes        InviteCode[]
+  attendances        Attendance[]
+  absencesOwn        AbsenceRequest[]  @relation("AbsenceSubject")
+  absencesCreated    AbsenceRequest[]  @relation("AbsenceCreator")
+  absencesDecided    AbsenceRequest[]  @relation("AbsenceDecider")
+  assignments        Assignment[]      @relation("AssignmentUser")
+  assignmentsMade    Assignment[]      @relation("AssignmentAuthor")
+  showLeaderships    ShowLeader[]
+  evaluationsGiven   Evaluation[]      @relation("EvaluationAuthor")
+  evaluationsGot     Evaluation[]      @relation("EvaluationTargetUser")
+  evaluatorRules     EvaluationRule[]  @relation("RuleEvaluatorUser")
+  feedbacks          Feedback[]        @relation("FeedbackAuthor")
+  feedbackReplies    FeedbackReply[]
+  tasksCreated       TaskRequest[]     @relation("TaskAuthor")
+  tasksAssigned      TaskRequest[]     @relation("TaskAssignee")
+  taskComments       TaskComment[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  uploadedFiles      StoredFile[]      @relation("FileUploader")
+  registrationsDecided RegistrationRequest[] @relation("RegistrationDecider")
+  registration         RegistrationRequest?  @relation("RegistrationCreatedUser")
+
+  @@index([departmentId])
+  @@index([status])
+  @@index([telegramId])
+}
+
+// Bo'lim rahbarligi — bir rahbar bir nechta bo'limga rahbarlik qilishi mumkin
+model DepartmentHead {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  isPrimary    Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, departmentId])
+  @@index([departmentId])
+}
+
+// Ko'rsatuvga rahbarlik (qaysi rahbar qaysi ko'rsatuvga javobgar)
+model ShowLeader {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  showId    String
+  show      Show     @relation(fields: [showId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, showId])
+  @@index([showId])
+}
+
+enum RegistrationStatus {
+  PENDING // Tasdiqlash kutilmoqda
+  APPROVED // Qabul qilindi
+  REJECTED // Rad etildi
+}
+
+/**
+ * Hodimning o'zi bot orqali yuborgan arizasi.
+ *
+ * Bosh admin tasdiqlamaguncha hodim tizimga kirmaydi:
+ * tasdiqlangandan keyingina User yozuvi yaratiladi va
+ * Mini App ochiladi.
+ */
+model RegistrationRequest {
+  id                String  @id @default(cuid())
+  telegramId        BigInt  @unique
+  telegramUsername  String?
+  telegramFirstName String?
+
+  fullName String // Ism sharifi
+  position String // Vazifasi
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  status RegistrationStatus @default(PENDING)
+
+  decidedById  String?
+  decidedBy    User?     @relation("RegistrationDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt    DateTime?
+  decisionNote String?
+
+  // Tasdiqlangach yaratilgan hodim yozuvi
+  createdUserId String? @unique
+  createdUser   User?   @relation("RegistrationCreatedUser", fields: [createdUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+// Telegram botga ulanish uchun bir martalik kod
+model InviteCode {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ============================================================
+//  2. ISH GRAFIGI VA OFIS
+// ============================================================
+
+model WorkSchedule {
+  id          String  @id @default(cuid())
+  name        String // masalan: "Standart 10:00-19:00"
+  description String?
+  isDefault   Boolean @default(false)
+
+  // Belgilanish oynasi
+  graceMinutes    Int @default(15) // Necha daqiqagacha kechikish "vaqtida" hisoblanadi
+  windowMinutes   Int @default(15) // Belgilanish oynasi shu vaqtdan keyin yopiladi
+  reminderMinutes Int @default(10) // Necha daqiqadan keyin eslatma yuboriladi
+
+  requireCheckOut Boolean @default(false) // Ish oxirida ham belgilanish talab qilinsinmi
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  days        ScheduleDay[]
+  departments Department[]
+  users       User[]
+}
+
+model ScheduleDay {
+  id         String       @id @default(cuid())
+  scheduleId String
+  schedule   WorkSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  weekday   Int // 1 = Dushanba ... 7 = Yakshanba
+  isWorkday Boolean @default(true)
+  startTime String // "10:00"
+  endTime   String // "19:00"
+
+  @@unique([scheduleId, weekday])
+}
+
+model Office {
+  id           String  @id @default(cuid())
+  name         String
+  address      String?
+  latitude     Float
+  longitude    Float
+  radiusMeters Int     @default(150) // Geofence radiusi
+  isDefault    Boolean @default(true)
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendances Attendance[]
+}
+
+// Bayram va dam olish kunlari kalendari
+model CalendarDay {
+  id        String   @id @default(cuid())
+  date      DateTime @unique @db.Date
+  name      String
+  isWorkday Boolean  @default(false) // false = dam olish, true = ko'chirilgan ish kuni
+  createdAt DateTime @default(now())
+}
+
+// ============================================================
+//  3. DAVOMAT
+// ============================================================
+
+enum AttendanceStatus {
+  PENDING // Kutilmoqda (ish vaqti boshlandi, hali belgilanmadi)
+  ON_TIME // Vaqtida keldi
+  LATE // Kechikdi
+  MISSED // Umuman belgilanmadi
+  EXCUSED // Sababli yo'q (safar, kasallik, ta'til)
+  DAY_OFF // Dam olish kuni
+}
+
+enum AttendanceMethod {
+  MINIAPP // Telegram Mini App (jonli kamera + GPS) — asosiy usul
+  TELEGRAM_CHAT // Chatdagi lokatsiya tugmasi + rasm — zaxira usul
+  MANUAL // Admin qo'lda kiritgan
+}
+
+enum AttendanceFlag {
+  OUTSIDE_GEOFENCE // Ofis hududidan tashqarida
+  LOW_GPS_ACCURACY // GPS aniqligi past (ehtimol soxta)
+  DUPLICATE_PHOTO // Avval yuborilgan rasm qayta yuborilgan
+  FALLBACK_METHOD // Zaxira usul ishlatilgan
+  TELEPORT // Qisqa vaqtda haqiqatga to'g'ri kelmaydigan masofa
+  NO_LOCATION // Lokatsiya umuman kelmadi
+  MANUAL_ENTRY // Qo'lda kiritilgan
+}
+
+model Attendance {
+  id     String   @id @default(cuid())
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date   DateTime @db.Date
+
+  expectedStartAt DateTime // Shu kun uchun rejadagi boshlanish vaqti
+  windowClosesAt  DateTime // Belgilanish oynasi yopiladigan vaqt
+
+  status  AttendanceStatus @default(PENDING)
+  flags   AttendanceFlag[] @default([])
+  method  AttendanceMethod?
+
+  checkInAt   DateTime?
+  minutesLate Int       @default(0)
+
+  photoFileId String?
+  photo       StoredFile? @relation("AttendancePhoto", fields: [photoFileId], references: [id], onDelete: SetNull)
+
+  latitude       Float?
+  longitude      Float?
+  accuracyMeters Float?
+  distanceMeters Float? // Ofisgacha bo'lgan masofa
+  officeId       String?
+  office         Office? @relation(fields: [officeId], references: [id], onDelete: SetNull)
+
+  // Ish oxiri (grafikda yoqilgan bo'lsa)
+  checkOutAt        DateTime?
+  checkOutPhotoId   String?
+  checkOutPhoto     StoredFile? @relation("AttendanceCheckOutPhoto", fields: [checkOutPhotoId], references: [id], onDelete: SetNull)
+
+  absenceRequestId String?
+  absenceRequest   AbsenceRequest? @relation(fields: [absenceRequestId], references: [id], onDelete: SetNull)
+
+  deviceInfo String? // User-Agent / platforma
+  ipAddress  String?
+  note       String?
+
+  reminderSentAt DateTime?
+  promptSentAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([date, status])
+  @@index([userId, date])
+}
+
+// ============================================================
+//  4. YO'QLIK SO'ROVLARI (safar, kasallik, ta'til)
+// ============================================================
+
+enum AbsenceType {
+  BUSINESS_TRIP // Xizmat safari
+  SICK_LEAVE // Davolanish / kasallik
+  VACATION // Ta'til
+  UNPAID // Ish haqisiz ta'til
+  REMOTE // Masofadan ishlash
+  OTHER // Boshqa
+}
+
+enum AbsenceStatus {
+  PENDING // Tasdiqlash kutilmoqda
+  APPROVED // Tasdiqlangan
+  REJECTED // Rad etilgan
+  CANCELLED // Bekor qilingan
+}
+
+model AbsenceRequest {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation("AbsenceSubject", fields: [userId], references: [id], onDelete: Cascade)
+
+  type      AbsenceType
+  startDate DateTime    @db.Date
+  endDate   DateTime    @db.Date
+  reason    String
+
+  createdById String
+  createdBy   User   @relation("AbsenceCreator", fields: [createdById], references: [id])
+
+  status       AbsenceStatus @default(PENDING)
+  decidedById  String?
+  decidedBy    User?         @relation("AbsenceDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt    DateTime?
+  decisionNote String?
+
+  attachmentId String?
+  attachment   StoredFile? @relation("AbsenceAttachment", fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendances Attendance[]
+
+  @@index([userId, status])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+// ============================================================
+//  5. KO'RSATUVLAR VA JAMOA BIRIKTIRISH
+// ============================================================
+
+enum EpisodeStatus {
+  PLANNED // Rejalashtirilgan
+  IN_PROGRESS // Jarayonda
+  DONE // Bo'lib o'tdi
+  CANCELLED // Bekor qilingan
+}
+
+enum AssignmentStatus {
+  ASSIGNED // Biriktirildi
+  CONFIRMED // Hodim tasdiqladi
+  DECLINED // Hodim rad etdi
+  REPLACED // Almashtirildi
+}
+
+model Show {
+  id          String  @id @default(cuid())
+  name        String
+  code        String  @unique
+  description String?
+
+  productionId String
+  production   Department @relation(fields: [productionId], references: [id])
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  episodes       ShowEpisode[]
+  leaders        ShowLeader[]
+  taskRequests   TaskRequest[]
+  socialAccounts SocialAccount[]
+  socialPosts    SocialPost[]
+  evaluations    Evaluation[]   @relation("EvaluationTargetShow")
+
+  @@index([productionId])
+}
+
+model ShowEpisode {
+  id     String @id @default(cuid())
+  showId String
+  show   Show   @relation(fields: [showId], references: [id], onDelete: Cascade)
+
+  title    String?
+  number   Int?
+  recordAt DateTime? // S'yomka vaqti
+  airAt    DateTime? // Efir vaqti
+  location String?
+
+  status EpisodeStatus @default(PLANNED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignments Assignment[]
+  evaluations Evaluation[] @relation("EvaluationEpisode")
+  taskRequests TaskRequest[]
+
+  @@index([showId, airAt])
+  @@index([status])
+}
+
+// Jamoa rollari — kengaytiriladigan (operator, boshlovchi, montajchi, chiroqchi, monitorchi...)
+model CrewRole {
+  id   String @id @default(cuid())
+  name String @unique
+  code String @unique
+
+  // Qaysi bo'lim shu rolga hodim beradi
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  assignments     Assignment[]
+  evaluationRules EvaluationRule[] @relation("RuleTargetCrewRole")
+}
+
+model Assignment {
+  id        String      @id @default(cuid())
+  episodeId String
+  episode   ShowEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation("AssignmentUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  crewRoleId String
+  crewRole   CrewRole @relation(fields: [crewRoleId], references: [id])
+
+  status AssignmentStatus @default(ASSIGNED)
+  note   String?
+
+  assignedById String
+  assignedBy   User   @relation("AssignmentAuthor", fields: [assignedById], references: [id])
+  assignedAt   DateTime @default(now())
+  respondedAt  DateTime?
+
+  @@unique([episodeId, userId, crewRoleId])
+  @@index([userId])
+  @@index([episodeId])
+}
+
+// ============================================================
+//  6. BAHOLASH TIZIMI
+// ============================================================
+
+enum EvaluationTargetType {
+  USER // Hodimni baholash
+  SHOW // Ko'rsatuv/prodakshnni baholash
+}
+
+enum EvaluatorKind {
+  DEPARTMENT_HEAD // Bo'lim rahbari o'z hodimlarini
+  SHOW_LEADER // Ko'rsatuv rahbari jamoani
+  ASSIGNED_CREW // Ko'rsatuvga biriktirilgan hodimlar (prodakshnni baholash uchun)
+  SPECIFIC_USER // Aniq bir hodim
+  CREW_PEER // Jamoa a'zolari bir-birini
+}
+
+enum EvaluationTrigger {
+  AFTER_EPISODE // Ko'rsatuv tugagach
+  MONTHLY // Har oy
+  MANUAL // Qo'lda
+}
+
+// Baholash matritsasi: kim kimni, qachon, qaysi mezon bo'yicha baholaydi
+model EvaluationRule {
+  id       String               @id @default(cuid())
+  name     String
+  isActive Boolean              @default(true)
+
+  targetType EvaluationTargetType
+  trigger    EvaluationTrigger    @default(AFTER_EPISODE)
+
+  // Kim baholaydi
+  evaluatorKind         EvaluatorKind
+  evaluatorUserId       String?
+  evaluatorUser         User?       @relation("RuleEvaluatorUser", fields: [evaluatorUserId], references: [id], onDelete: SetNull)
+  evaluatorDepartmentId String?
+  evaluatorDepartment   Department? @relation("RuleEvaluatorDepartment", fields: [evaluatorDepartmentId], references: [id], onDelete: SetNull)
+
+  // Kimni baholaydi
+  targetDepartmentId String?
+  targetDepartment   Department? @relation("RuleTargetDepartment", fields: [targetDepartmentId], references: [id], onDelete: SetNull)
+  targetCrewRoleId   String?
+  targetCrewRole     CrewRole?   @relation("RuleTargetCrewRole", fields: [targetCrewRoleId], references: [id], onDelete: SetNull)
+
+  windowHours Int @default(48) // Baholash oynasi necha soat ochiq turadi
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  criteria    EvaluationCriterion[]
+  evaluations Evaluation[]
+
+  @@index([isActive, trigger])
+}
+
+model EvaluationCriterion {
+  id     String         @id @default(cuid())
+  ruleId String
+  rule   EvaluationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  name      String // masalan: "Vaqtida kelish", "Sifat", "Jamoaviy ish"
+  weight    Float  @default(1)
+  maxScore  Int    @default(5)
+  sortOrder Int    @default(0)
+
+  scores EvaluationScore[]
+}
+
+model Evaluation {
+  id     String         @id @default(cuid())
+  ruleId String
+  rule   EvaluationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  evaluatorId String
+  evaluator   User   @relation("EvaluationAuthor", fields: [evaluatorId], references: [id], onDelete: Cascade)
+
+  targetType   EvaluationTargetType
+  targetUserId String?
+  targetUser   User?   @relation("EvaluationTargetUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  targetShowId String?
+  targetShow   Show?   @relation("EvaluationTargetShow", fields: [targetShowId], references: [id], onDelete: Cascade)
+
+  episodeId String?
+  episode   ShowEpisode? @relation("EvaluationEpisode", fields: [episodeId], references: [id], onDelete: SetNull)
+
+  overallScore Float // 1..5 (mezonlar bo'yicha vaznli o'rtacha)
+  comment      String?
+
+  openedAt    DateTime  @default(now())
+  expiresAt   DateTime?
+  submittedAt DateTime?
+
+  scores EvaluationScore[]
+
+  @@unique([ruleId, evaluatorId, targetUserId, targetShowId, episodeId])
+  @@index([targetUserId, submittedAt])
+  @@index([targetShowId, submittedAt])
+  @@index([evaluatorId, submittedAt])
+}
+
+model EvaluationScore {
+  id           String              @id @default(cuid())
+  evaluationId String
+  evaluation   Evaluation          @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  criterionId  String
+  criterion    EvaluationCriterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+  score        Float
+
+  @@unique([evaluationId, criterionId])
+}
+
+// ============================================================
+//  7. MAXFIY MUROJAAT
+// ============================================================
+
+enum FeedbackCategory {
+  TECHNICAL // Texnika / jihoz
+  RELATIONS // Munosabatlar
+  CONDITIONS // Ish sharoiti
+  SALARY // Moliyaviy masalalar
+  SUGGESTION // Taklif
+  OTHER // Boshqa
+}
+
+enum FeedbackStatus {
+  NEW
+  IN_REVIEW
+  ANSWERED
+  CLOSED
+}
+
+model Feedback {
+  id       String           @id @default(cuid())
+  authorId String
+  author   User             @relation("FeedbackAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  category FeedbackCategory @default(OTHER)
+  subject  String
+  body     String
+  status   FeedbackStatus   @default(NEW)
+
+  // Hodimga "maxfiy" ko'rinadi, adminga muallif ko'rinadi
+  readByAdminAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  replies FeedbackReply[]
+
+  @@index([status, createdAt])
+  @@index([authorId])
+}
+
+model FeedbackReply {
+  id         String   @id @default(cuid())
+  feedbackId String
+  feedback   Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body       String
+  fromAdmin  Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  @@index([feedbackId])
+}
+
+// ============================================================
+//  8. BO'LIMLARARO SO'ROVLAR VA DEADLINE NAZORATI
+// ============================================================
+
+enum TaskStatus {
+  NEW // Yangi — hali javob berilmagan
+  ACCEPTED // Qabul qilindi, ijrochi belgilandi
+  IN_PROGRESS // Jarayonda
+  DONE // Bajarildi
+  REJECTED // Rad etildi
+  CANCELLED // Bekor qilindi
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model TaskRequest {
+  id     String @id @default(cuid())
+  number Int    @unique @default(autoincrement()) // So'rov raqami (#128)
+
+  title       String
+  description String
+
+  fromUserId       String
+  fromUser         User       @relation("TaskAuthor", fields: [fromUserId], references: [id])
+  fromDepartmentId String
+  fromDepartment   Department @relation("TaskFromDepartment", fields: [fromDepartmentId], references: [id])
+  toDepartmentId   String
+  toDepartment     Department @relation("TaskToDepartment", fields: [toDepartmentId], references: [id])
+
+  showId    String?
+  show      Show?        @relation(fields: [showId], references: [id], onDelete: SetNull)
+  episodeId String?
+  episode   ShowEpisode? @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+
+  priority TaskPriority @default(NORMAL)
+  status   TaskStatus   @default(NEW)
+
+  assigneeId String?
+  assignee   User?   @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  deadlineAt DateTime?
+
+  firstResponseAt DateTime? // Birinchi marta javob berilgan vaqt (qabul/rad)
+  acceptedAt      DateTime?
+  completedAt     DateTime?
+  rejectedReason  String?
+
+  // Hisobot uchun oldindan hisoblangan maydonlar
+  isOverdue          Boolean @default(false)
+  overdueMinutes     Int     @default(0)
+  noResponseFlagged  Boolean @default(false) // Umuman javob berilmagan deb belgilangan
+
+  deadlineReminderSentAt DateTime?
+  overdueNotifiedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  comments    TaskComment[]
+  attachments TaskAttachment[]
+
+  @@index([toDepartmentId, status])
+  @@index([fromDepartmentId, status])
+  @@index([assigneeId, status])
+  @@index([deadlineAt])
+  @@index([status, createdAt])
+}
+
+model TaskComment {
+  id            String      @id @default(cuid())
+  taskRequestId String
+  taskRequest   TaskRequest @relation(fields: [taskRequestId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body          String
+  createdAt     DateTime    @default(now())
+
+  @@index([taskRequestId])
+}
+
+model TaskAttachment {
+  id            String      @id @default(cuid())
+  taskRequestId String
+  taskRequest   TaskRequest @relation(fields: [taskRequestId], references: [id], onDelete: Cascade)
+  fileId        String
+  file          StoredFile  @relation("TaskFile", fields: [fileId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  @@index([taskRequestId])
+}
+
+// ============================================================
+//  9. IJTIMOIY TARMOQ ANALITIKASI
+// ============================================================
+
+enum SocialPlatform {
+  YOUTUBE
+  INSTAGRAM
+  TELEGRAM
+}
+
+model SocialAccount {
+  id       String         @id @default(cuid())
+  platform SocialPlatform
+  name     String // Ko'rinadigan nom
+  handle   String? // @username yoki kanal nomi
+  externalId String // Kanal ID / Business account ID / Chat ID
+  url      String?
+
+  showId String?
+  show   Show?   @relation(fields: [showId], references: [id], onDelete: SetNull)
+
+  isActive     Boolean   @default(true)
+  lastSyncedAt DateTime?
+  syncError    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  posts        SocialPost[]
+  snapshots    SocialAccountSnapshot[]
+  monthlyStats SocialMonthlyStat[]
+
+  @@unique([platform, externalId])
+  @@index([showId])
+}
+
+model SocialPost {
+  id         String        @id @default(cuid())
+  accountId  String
+  account    SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  externalId String
+
+  showId String?
+  show   Show?   @relation(fields: [showId], references: [id], onDelete: SetNull)
+
+  title       String?
+  url         String?
+  thumbnailUrl String?
+  publishedAt DateTime
+
+  views    Int @default(0)
+  likes    Int @default(0)
+  comments Int @default(0)
+  shares   Int @default(0)
+
+  lastSyncedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  metrics SocialPostMetric[]
+
+  @@unique([accountId, externalId])
+  @@index([publishedAt])
+  @@index([showId, publishedAt])
+}
+
+// Har sinxronizatsiyadagi kesim — o'sish dinamikasini ko'rish uchun
+model SocialPostMetric {
+  id         String     @id @default(cuid())
+  postId     String
+  post       SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  capturedAt DateTime   @default(now())
+  views      Int
+  likes      Int
+  comments   Int
+  shares     Int
+
+  @@index([postId, capturedAt])
+}
+
+model SocialAccountSnapshot {
+  id         String        @id @default(cuid())
+  accountId  String
+  account    SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  capturedAt DateTime      @default(now())
+  followers  Int           @default(0)
+  totalViews BigInt        @default(0)
+
+  @@index([accountId, capturedAt])
+}
+
+// Oylik solishtirma statistika
+model SocialMonthlyStat {
+  id        String        @id @default(cuid())
+  accountId String
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  year  Int
+  month Int // 1..12
+
+  views     Int   @default(0)
+  likes     Int   @default(0)
+  comments  Int   @default(0)
+  postCount Int   @default(0)
+  followers Int   @default(0)
+
+  prevViews    Int   @default(0)
+  deltaPercent Float @default(0) // Oldingi oyga nisbatan o'zgarish, %
+
+  computedAt DateTime @default(now())
+
+  @@unique([accountId, year, month])
+  @@index([year, month])
+}
+
+// ============================================================
+//  10. TIZIM: fayllar, bildirishnomalar, jurnal, sozlamalar
+// ============================================================
+
+model StoredFile {
+  id         String  @id @default(cuid())
+  storageKey String  @unique // Diskdagi yoki S3'dagi kalit
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  width      Int?
+  height     Int?
+
+  // Takroriy rasmni aniqlash uchun perceptual hash (64 bitlik, 16 belgili hex)
+  phash    String?
+  sha256   String?
+
+  uploadedById String?
+  uploadedBy   User?   @relation("FileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  userAvatars           User[]           @relation("UserAvatar")
+  attendancePhotos      Attendance[]     @relation("AttendancePhoto")
+  attendanceCheckOuts   Attendance[]     @relation("AttendanceCheckOutPhoto")
+  absenceAttachments    AbsenceRequest[] @relation("AbsenceAttachment")
+  taskAttachments       TaskAttachment[] @relation("TaskFile")
+
+  @@index([phash])
+  @@index([sha256])
+}
+
+enum NotificationType {
+  ATTENDANCE_PROMPT // Ish vaqti boshlandi — belgilaning
+  ATTENDANCE_REMINDER // Eslatma
+  ATTENDANCE_MISSED_REPORT // Rahbarga: kim belgilanmadi
+  ABSENCE_APPROVAL // Tasdiqlovchi rahbarga so'rov
+  ABSENCE_DECIDED // So'rov natijasi
+  ASSIGNMENT_CREATED // Ko'rsatuvga biriktirildingiz
+  EVALUATION_OPEN // Baholash oynasi ochildi
+  TASK_CREATED // Yangi so'rov keldi
+  TASK_ASSIGNED // Sizga topshiriq berildi
+  TASK_DEADLINE_SOON // Deadline yaqinlashdi
+  TASK_OVERDUE // Muddat o'tdi
+  TASK_STATUS_CHANGED // Status o'zgardi
+  FEEDBACK_REPLY // Murojaatingizga javob
+  WEEKLY_DIGEST // Haftalik xulosa
+  SYSTEM // Tizim xabari
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+  BLOCKED // Hodim botni bloklagan
+}
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type   NotificationType
+  title  String
+  body   String
+  payload Json?
+
+  status           NotificationStatus @default(QUEUED)
+  telegramMessageId Int?
+  sentAt           DateTime?
+  error            String?
+  readAt           DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model AuditLog {
+  id      String @id @default(cuid())
+  actorId String?
+  actor   User?  @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  action     String // "user.create", "attendance.manual", "absence.approve"...
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

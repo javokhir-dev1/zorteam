@@ -1,0 +1,114 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-brand-50: #eef4ff;
+  --color-brand-100: #d9e5ff;
+  --color-brand-200: #bcd1ff;
+  --color-brand-300: #8eb4ff;
+  --color-brand-400: #598cff;
+  --color-brand-500: #3563f5;
+  --color-brand-600: #2044ea;
+  --color-brand-700: #1a34d7;
+  --color-brand-800: #1c2fae;
+  --color-brand-900: #1c2e89;
+
+  --color-ok: #16a34a;
+  --color-late: #f59e0b;
+  --color-miss: #dc2626;
+  --color-suspect: #a855f7;
+}
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e4e7ec;
+  --text: #101828;
+  --text-muted: #667085;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #262d38;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+  }
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Telegram Mini App ichida tizim ranglarini qo'llash */
+body.tg-app {
+  background: var(--tg-theme-bg-color, var(--bg));
+  color: var(--tg-theme-text-color, var(--text));
+}
+
+/* Tailwind 4'da @apply faqat utility klasslar bilan ishlaydi,
+   shuning uchun komponent klasslari to'liq yozilgan. */
+
+.card {
+  @apply rounded-xl border p-4;
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.btn,
+.btn-primary,
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors;
+}
+
+.btn:disabled,
+.btn-primary:disabled,
+.btn-ghost:disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+
+.btn-primary {
+  @apply bg-brand-600 text-white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  @apply bg-brand-700;
+}
+
+.btn-ghost {
+  @apply border;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: rgb(0 0 0 / 0.04);
+}
+
+.input {
+  @apply w-full rounded-lg border px-3 py-2.5 text-sm outline-none;
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.input:focus {
+  @apply border-brand-500;
+}
+
+.input:disabled {
+  @apply cursor-not-allowed opacity-60;
+}
+
+.label {
+  @apply mb-1.5 block text-sm font-medium;
+}
+
+.muted {
+  color: var(--text-muted);
+}
