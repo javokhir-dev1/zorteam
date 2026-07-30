@@ -1,0 +1,94 @@
+# ============================================================
+#  Zo'r team — serverdagi ishga tushirish tarkibi
+#
+#  Ishlatish:  docker compose up -d --build
+#  Sozlamalar: .env fayli (namuna: .env.production.example)
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zorteam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD .env da kiritilishi shart}
+      POSTGRES_DB: ${POSTGRES_DB:-zorteam}
+      TZ: ${TZ:-Asia/Tashkent}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-zorteam} -d ${POSTGRES_DB:-zorteam}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Baza tashqi dunyoga ochilmaydi — faqat konteynerlar orasida
+    expose:
+      - '5432'
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      TZ: ${TZ:-Asia/Tashkent}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-zorteam}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zorteam}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env da kiritilishi shart}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+      MINIAPP_URL: https://${DOMAIN}/app
+      TELEGRAM_WEBHOOK_URL: ${TELEGRAM_WEBHOOK_URL}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_PATH: /app/storage
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
+      INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN}
+      INSTAGRAM_BUSINESS_ACCOUNT_ID: ${INSTAGRAM_BUSINESS_ACCOUNT_ID}
+    volumes:
+      # Davomat fotolari — konteyner qayta qurilsa ham saqlanadi
+      - api-storage:/app/storage
+    expose:
+      - '4000'
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ:-Asia/Tashkent}
+      # API so'rovlari web ilova orqali proksilanadi
+      API_PROXY_TARGET: http://api:4000
+    expose:
+      - '3000'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN .env da kiritilishi shart}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL .env da kiritilishi shart}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  api-storage:
+  caddy-data:
+  caddy-config:

@@ -17,6 +17,7 @@ Thumbs.db
 
 uploads/
 storage/
+backups/
 
 coverage/
 .turbo/

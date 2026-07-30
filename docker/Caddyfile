@@ -1,0 +1,31 @@
+# HTTPS sertifikati Let's Encrypt'dan avtomatik olinadi va avtomatik yangilanadi.
+# Hech qanday qo'lda sozlash talab qilinmaydi — domen serverga yo'naltirilgan bo'lsa kifoya.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Davomat fotolari 12 MB gacha bo'lishi mumkin
+	request_body {
+		max_size 20MB
+	}
+
+	# Barcha so'rovlar Next.js ga, u esa /api ni backendga uzatadi
+	reverse_proxy web:3000 {
+		# Fayl yuklash uzoq davom etsa uzilmasligi uchun
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20MB
+			roll_keep 5
+		}
+	}
+}

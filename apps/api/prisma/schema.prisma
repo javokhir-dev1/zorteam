@@ -5,6 +5,8 @@
 
 generator client {
   provider = "prisma-client-js"
+  // native — ishlab chiqish uchun (Windows), debian — serverdagi Docker konteyner uchun
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
