@@ -37,7 +37,9 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+          # Avval kod yangilanadi — shunda deploy skriptining eng oxirgi
+          # versiyasi ishlaydi (skript ichidagi pull esa bo'sh o'tadi).
           ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
             -o StrictHostKeyChecking=yes \
             "$SSH_USER@$SSH_HOST" \
-            'cd /root/zor_team && ./scripts/deploy-pm2.sh'
+            'cd /root/zor_team && git pull --ff-only && chmod +x scripts/deploy-pm2.sh && ./scripts/deploy-pm2.sh'
