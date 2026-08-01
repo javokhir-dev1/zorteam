@@ -1,6 +1,14 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  forwardRef,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { AttendanceService } from '../attendance/attendance.service';
 import { toDateOnly } from '../../common/utils/dates';
 import { UpsertScheduleDto, UpsertOfficeDto, UpsertCalendarDayDto } from './dto';
 import type { AuthUser } from '../../common/auth/auth.types';
@@ -14,10 +22,27 @@ const DEFAULT_DAYS = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
 
 @Injectable()
 export class SchedulesService {
+  private readonly logger = new Logger(SchedulesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    @Inject(forwardRef(() => AttendanceService))
+    private readonly attendance: AttendanceService,
   ) {}
+
+  /**
+   * Grafik yoki bayram kunlari o'zgargach bugungi davomat yozuvlarini
+   * qayta hisoblaymiz — aks holda o'zgarish faqat ertaga kuchga kirardi
+   * (yozuvlar har kuni 00:05 da tayyorlanadi).
+   */
+  private async applyToToday() {
+    try {
+      await this.attendance.ensureDayRecords(new Date());
+    } catch (error) {
+      this.logger.error(`Bugungi davomat yozuvlarini yangilab bo'lmadi: ${(error as Error).message}`);
+    }
+  }
 
   // ---------- Ish grafiklari ----------
 
@@ -69,6 +94,7 @@ export class SchedulesService {
     });
 
     await this.audit.log(actor.id, 'schedule.create', 'WorkSchedule', schedule.id, null, schedule);
+    await this.applyToToday();
     return schedule;
   }
 
@@ -112,6 +138,7 @@ export class SchedulesService {
     });
 
     await this.audit.log(actor.id, 'schedule.update', 'WorkSchedule', id, before, after);
+    await this.applyToToday();
     return after;
   }
 
@@ -238,12 +265,14 @@ export class SchedulesService {
     });
 
     await this.audit.log(actor.id, 'calendar.upsert', 'CalendarDay', day.id, null, day);
+    await this.applyToToday();
     return day;
   }
 
   async removeCalendarDay(actor: AuthUser, id: string) {
     await this.prisma.calendarDay.delete({ where: { id } });
     await this.audit.log(actor.id, 'calendar.delete', 'CalendarDay', id);
+    await this.applyToToday();
     return { ok: true };
   }
 

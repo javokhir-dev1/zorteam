@@ -193,7 +193,7 @@ export class AttendanceBotHandlers implements OnModuleInit {
     if (status.status === AttendanceStatus.MISSED) {
       await ctx.reply(
         [
-          '❌ Belgilanish oynasi yopilgan.',
+          `❌ Ish kuni tugagan (${fmtTime(status.windowClosesAt)}) — belgilanish yopilgan.`,
           '',
           'Sabab bo\'lsa rahbaringizga murojaat qiling.',
         ].join('\n'),
@@ -206,7 +206,10 @@ export class AttendanceBotHandlers implements OnModuleInit {
     await ctx.reply(
       [
         `Ish vaqtingiz: <b>${fmtTime(status.expectedStartAt)}</b>`,
-        `Oyna yopiladi: <b>${fmtTime(status.windowClosesAt)}</b>`,
+        `Belgilanish <b>${fmtTime(status.windowClosesAt)}</b> gacha ochiq`,
+        ...(status.pendingMinutesLate > 0
+          ? [`⚠️ Hozircha <b>${status.pendingMinutesLate} daqiqa</b> kechikish`]
+          : []),
         '',
         keyboard
           ? 'Tugmani bosing — kamera ochiladi va joylashuv avtomatik olinadi.\n\n<i>Tugma ochilmasa: /zaxira</i>'

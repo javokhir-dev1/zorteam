@@ -14,7 +14,7 @@ import { dayjs, fmtTime, dateKey } from '../../common/utils/dates';
  *   00:05  — kunlik yozuvlarni tayyorlash
  *   har daqiqa — ish vaqti kelganlarga xabar yuborish
  *   har daqiqa — belgilanmaganlarga eslatma
- *   har daqiqa — oyna yopilgach "belgilanmadi" deb yozish
+ *   har daqiqa — ish kuni tugagach "belgilanmadi" deb yozish
  *   har 5 daqiqa — rahbarlarga belgilanmaganlar ro'yxati
  */
 @Injectable()
@@ -69,7 +69,8 @@ export class AttendanceScheduler {
             ? 'Belgilanish uchun quyidagi tugmani bosing — kamera ochiladi.'
             : 'Belgilanish uchun /zaxira buyrug\'ini yuboring.',
           '',
-          `⏳ Oyna ${fmtTime(record.windowClosesAt)} da yopiladi.`,
+          `⏳ Belgilanish ish kuni oxirigacha (${fmtTime(record.windowClosesAt)}) ochiq,`,
+          'lekin kechikkan har bir daqiqa hisobga olinadi.',
         ].join('\n');
 
         await this.notifications.notify({
@@ -119,9 +120,9 @@ export class AttendanceScheduler {
 
         if (reminderAt > now) continue;
 
-        const minutesLeft = Math.max(
+        const minutesLate = Math.max(
           0,
-          Math.round((record.windowClosesAt.getTime() - now.getTime()) / 60000),
+          Math.round((now.getTime() - record.expectedStartAt.getTime()) / 60000),
         );
 
         await this.notifications.notify({
@@ -129,9 +130,11 @@ export class AttendanceScheduler {
           type: NotificationType.ATTENDANCE_REMINDER,
           title: '⚠️ Hali belgilanmadingiz',
           body: [
-            `Belgilanish oynasi yopilishiga <b>${minutesLeft} daqiqa</b> qoldi.`,
+            `Hozircha <b>${minutesLate} daqiqa</b> kechikish yozilmoqda.`,
             '',
-            'Belgilanmasangiz kun "belgilanmadi" deb yoziladi.',
+            `Belgilanish ${fmtTime(record.windowClosesAt)} gacha ochiq — kechroq belgilansangiz ham`,
+            'kechikish daqiqalari hisobotga tushadi. Umuman belgilanmasangiz',
+            'kun "belgilanmadi" deb yoziladi.',
             this.telegram.miniAppFallbackNote,
           ].join('\n'),
           payload: { attendanceId: record.id },
@@ -149,7 +152,7 @@ export class AttendanceScheduler {
     });
   }
 
-  /** Oyna yopilgach belgilanmaganlarni MISSED qilish */
+  /** Ish kuni tugagach belgilanmaganlarni MISSED qilish */
   @Cron(CronExpression.EVERY_MINUTE)
   async closeWindows() {
     await this.guard('closeWindows', async () => {
@@ -177,8 +180,11 @@ export class AttendanceScheduler {
   }
 
   /**
-   * Rahbarlarga belgilanmaganlar ro'yxati.
-   * Kuniga bir marta, oyna yopilgandan keyin yuboriladi.
+   * Rahbarlarga hali belgilanmaganlar ro'yxati — bo'limga kuniga bir marta.
+   *
+   * Belgilanish oynasi ish kuni oxirigacha ochiq bo'lgani uchun rahbar
+   * kechgacha kutmaydi: grafikdagi `windowMinutes` shu xabar yuboriladigan
+   * chegara sifatida ishlatiladi (masalan ish boshidan 15 daqiqa keyin).
    */
   @Cron('*/5 * * * *', { timeZone: process.env.TZ || 'Asia/Tashkent' })
   async reportToHeads() {
@@ -192,11 +198,11 @@ export class AttendanceScheduler {
       const notifiedDeptIds = new Set<string>((already?.value as string[]) ?? []);
 
       const now = new Date();
-      const missed = await this.prisma.attendance.findMany({
+      const unmarked = await this.prisma.attendance.findMany({
         where: {
           date: { gte: new Date(`${today}T00:00:00.000Z`) },
-          status: AttendanceStatus.MISSED,
-          windowClosesAt: { lte: now },
+          checkInAt: null,
+          status: { in: [AttendanceStatus.PENDING, AttendanceStatus.MISSED] },
         },
         include: {
           user: {
@@ -211,31 +217,40 @@ export class AttendanceScheduler {
         },
       });
 
-      if (!missed.length) return;
+      if (!unmarked.length) return;
 
-      // Bo'limlar bo'yicha guruhlaymiz
-      const byDepartment = new Map<string, { name: string; users: typeof missed }>();
-      for (const record of missed) {
+      // Bo'limlar bo'yicha guruhlaymiz. Chegarasi hali kelmagan hodim bo'lsa,
+      // butun bo'lim bo'yicha kutamiz — ro'yxat to'liq ketsin.
+      type Row = (typeof unmarked)[number];
+      const byDepartment = new Map<string, { name: string; users: Row[]; waiting: boolean }>();
+
+      for (const record of unmarked) {
         const deptId = record.user.departmentId;
         if (!deptId || notifiedDeptIds.has(deptId)) continue;
 
         if (!byDepartment.has(deptId)) {
-          byDepartment.set(deptId, { name: record.user.department?.name ?? "Bo'limsiz", users: [] });
+          byDepartment.set(deptId, {
+            name: record.user.department?.name ?? "Bo'limsiz",
+            users: [],
+            waiting: false,
+          });
         }
-        byDepartment.get(deptId)!.users.push(record);
+        const group = byDepartment.get(deptId)!;
+
+        const schedule = await this.schedules.effectiveScheduleFor(record.userId);
+        const reportAt = dayjs(record.expectedStartAt)
+          .add(schedule?.windowMinutes ?? 15, 'minute')
+          .toDate();
+
+        if (reportAt > now) {
+          group.waiting = true;
+        } else {
+          group.users.push(record);
+        }
       }
 
       for (const [deptId, group] of byDepartment) {
-        // Shu bo'limda hali belgilanish oynasi ochiq hodim bo'lsa kutamiz
-        const stillOpen = await this.prisma.attendance.count({
-          where: {
-            date: { gte: new Date(`${today}T00:00:00.000Z`) },
-            status: AttendanceStatus.PENDING,
-            windowClosesAt: { gt: now },
-            user: { departmentId: deptId },
-          },
-        });
-        if (stillOpen > 0) continue;
+        if (group.waiting || !group.users.length) continue;
 
         const heads = await this.prisma.departmentHead.findMany({
           where: { departmentId: deptId },
@@ -244,15 +259,23 @@ export class AttendanceScheduler {
         if (!heads.length) continue;
 
         const lines = group.users.map(
-          (r, i) => `${i + 1}. <b>${r.user.fullName}</b> — ${r.user.position}`,
+          (r, i) =>
+            `${i + 1}. <b>${r.user.fullName}</b> — ${r.user.position}` +
+            ` (${Math.max(0, Math.round((now.getTime() - r.expectedStartAt.getTime()) / 60000))} daq)`,
         );
 
         await this.notifications.notifyMany(
           heads.map((h) => h.userId),
           {
             type: NotificationType.ATTENDANCE_MISSED_REPORT,
-            title: `📋 ${group.name}: belgilanmaganlar`,
-            body: [`Bugun (${today}) belgilanmagan hodimlar:`, '', ...lines].join('\n'),
+            title: `📋 ${group.name}: hali belgilanmaganlar`,
+            body: [
+              `Bugun (${today}) ish vaqti boshlanib, hali belgilanmagan hodimlar:`,
+              '',
+              ...lines,
+              '',
+              "Ular ish kuni oxirigacha belgilanishi mumkin — kechikish daqiqalari hisobotga tushadi.",
+            ].join('\n'),
             payload: { departmentId: deptId, date: today },
           },
         );

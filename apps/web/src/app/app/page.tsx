@@ -31,6 +31,8 @@ interface TodayStatus {
   windowClosesAt: string | null;
   checkInAt: string | null;
   minutesLate: number;
+  /** Hali belgilanmagan bo'lsa — shu daqiqagacha to'plangan kechikish */
+  pendingMinutesLate: number;
   canCheckIn: boolean;
   office: { name: string; latitude: number; longitude: number; radiusMeters: number } | null;
   serverTime: string;
@@ -283,13 +285,15 @@ export default function MiniAppHome() {
       return (
         <div className="card text-center">
           <AlertTriangle className="mx-auto mb-3 text-red-500" size={36} />
-          <p className="font-medium">Belgilanish oynasi yopilgan</p>
+          <p className="font-medium">Ish kuni tugadi</p>
           <p className="muted mt-1 text-sm">
-            Oyna {fmtTime(today.windowClosesAt)} da yopilgan. Rahbaringizga murojaat qiling.
+            Belgilanish {fmtTime(today.windowClosesAt)} da yopilgan. Rahbaringizga murojaat qiling.
           </p>
         </div>
       );
     }
+
+    const late = today.pendingMinutesLate ?? 0;
 
     return (
       <div className="card">
@@ -299,10 +303,16 @@ export default function MiniAppHome() {
             <p className="font-semibold">{fmtTime(today.expectedStartAt)}</p>
           </div>
           <div className="text-right">
-            <p className="muted text-xs">Oyna yopiladi</p>
-            <p className="font-semibold text-amber-600">{fmtTime(today.windowClosesAt)}</p>
+            <p className="muted text-xs">Ish tugaydi</p>
+            <p className="font-semibold">{fmtTime(today.windowClosesAt)}</p>
           </div>
         </div>
+
+        {late > 0 && (
+          <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-center text-sm font-medium text-amber-700">
+            Hozircha {late} daqiqa kechikish
+          </p>
+        )}
 
         <button onClick={startCheckIn} className="btn-primary w-full py-4 text-base">
           <Camera size={20} />

@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   AbsenceStatus,
@@ -40,6 +47,7 @@ export class AttendanceService {
     private readonly access: AccessService,
     private readonly audit: AuditService,
     private readonly storage: StorageService,
+    @Inject(forwardRef(() => SchedulesService))
     private readonly schedules: SchedulesService,
     private readonly config: ConfigService,
   ) {}
@@ -55,15 +63,25 @@ export class AttendanceService {
    * Yozuv holati darhol aniqlanadi:
    *   - dam olish kuni / bayram      → DAY_OFF
    *   - tasdiqlangan yo'qlik so'rovi → EXCUSED
+   *   - ish kuni tugagan             → MISSED
    *   - aks holda                    → PENDING (belgilanish kutilmoqda)
+   *
+   * Qayta chaqirilganda hisob yangidan yuritiladi — shuning uchun admin
+   * panelda grafik yoki bayram kunlari o'zgartirilsa, bugungi yozuvlar
+   * darhol to'g'rilanadi (belgilanib bo'lingan yozuvlarga tegilmaydi).
+   *
+   * @param userIds faqat shu hodimlarni yangilash (bo'sh bo'lsa — hammasi)
    */
-  async ensureDayRecords(date: Date = new Date()) {
+  async ensureDayRecords(date: Date = new Date(), userIds?: string[]) {
     const day = toDateOnly(date);
     const weekday = isoWeekday(date);
 
     const [users, calendarDay, absences] = await Promise.all([
       this.prisma.user.findMany({
-        where: { status: UserStatus.ACTIVE },
+        where: {
+          status: UserStatus.ACTIVE,
+          ...(userIds?.length ? { id: { in: userIds } } : {}),
+        },
         select: { id: true, departmentId: true },
       }),
       this.prisma.calendarDay.findUnique({ where: { date: day } }),
@@ -99,6 +117,15 @@ export class AttendanceService {
         ? true
         : !isHoliday && (scheduleDay?.isWorkday ?? false);
 
+      // Belgilanish oynasi ish kuni oxirigacha ochiq turadi — kech kelgan
+      // hodim ham belgilanadi, kechikish daqiqalari hisoblanib boradi.
+      const expectedStartAt = atTime(day, scheduleDay?.startTime ?? '10:00');
+      const windowClosesAt = this.workdayEndsAt(
+        day,
+        expectedStartAt,
+        scheduleDay?.endTime ?? '19:00',
+      );
+
       let status: AttendanceStatus = AttendanceStatus.PENDING;
       let absenceRequestId: string | null = null;
 
@@ -107,13 +134,10 @@ export class AttendanceService {
       } else if (absenceByUser.has(user.id)) {
         status = AttendanceStatus.EXCUSED;
         absenceRequestId = absenceByUser.get(user.id)!;
+      } else if (windowClosesAt <= new Date()) {
+        // Kun o'tib ketgan — belgilanmagan holda qoladi
+        status = AttendanceStatus.MISSED;
       }
-
-      const startTime = scheduleDay?.startTime ?? '10:00';
-      const expectedStartAt = atTime(day, startTime);
-      const windowClosesAt = dayjs(expectedStartAt)
-        .add(schedule?.windowMinutes ?? 15, 'minute')
-        .toDate();
 
       const data = {
         userId: user.id,
@@ -133,8 +157,29 @@ export class AttendanceService {
       }
     }
 
-    this.logger.log(`${dateKey(day)}: ${created} ta yangi davomat yozuvi tayyorlandi`);
+    if (created) {
+      this.logger.log(`${dateKey(day)}: ${created} ta yangi davomat yozuvi tayyorlandi`);
+    }
     return { date: dateKey(day), created, total: users.length };
+  }
+
+  /**
+   * Ish kuni tugash payti — belgilanish oynasi shu vaqtda yopiladi.
+   * Tunda tugaydigan smena uchun (masalan 22:00–06:00) ertangi kunga o'tadi.
+   */
+  private workdayEndsAt(day: Date, expectedStartAt: Date, endTime: string): Date {
+    const endsAt = atTime(day, endTime);
+    return endsAt > expectedStartAt ? endsAt : dayjs(endsAt).add(1, 'day').toDate();
+  }
+
+  /**
+   * Bitta hodimning bugungi yozuvini qayta hisoblaydi.
+   *
+   * Admin panelda grafik yoki bayram kunlari o'zgartirilganda yozuv eskirib
+   * qoladi — Mini App va bot har safar shu orqali eng oxirgi holatni oladi.
+   */
+  private async refreshToday(userId: string) {
+    await this.ensureDayRecords(new Date(), [userId]);
   }
 
   // ============================================================
@@ -144,17 +189,13 @@ export class AttendanceService {
   async checkIn(input: CheckInInput) {
     const today = toDateOnly(new Date());
 
-    let attendance = await this.prisma.attendance.findUnique({
+    // Yozuvni har safar qayta hisoblaymiz — grafik kun davomida
+    // o'zgartirilgan bo'lsa ham hodim to'g'ri holatda belgilanadi
+    await this.refreshToday(input.userId);
+
+    const attendance = await this.prisma.attendance.findUnique({
       where: { userId_date: { userId: input.userId, date: today } },
     });
-
-    // Yozuv bo'lmasa (yangi hodim, kun o'rtasida qo'shilgan) — darhol yaratamiz
-    if (!attendance) {
-      await this.ensureDayRecords(new Date());
-      attendance = await this.prisma.attendance.findUnique({
-        where: { userId_date: { userId: input.userId, date: today } },
-      });
-    }
 
     if (!attendance) {
       throw new BadRequestException('Bugungi kun uchun davomat yozuvi topilmadi');
@@ -173,6 +214,12 @@ export class AttendanceService {
     if (attendance.status === AttendanceStatus.EXCUSED) {
       throw new BadRequestException(
         "Bugun siz uchun tasdiqlangan yo'qlik (safar/ta'til) belgilangan",
+      );
+    }
+
+    if (attendance.status === AttendanceStatus.MISSED) {
+      throw new BadRequestException(
+        `Ish kuni tugagan (${fmtTime(attendance.windowClosesAt)}) — belgilanish yopildi. Rahbaringizga murojaat qiling.`,
       );
     }
 
@@ -516,20 +563,21 @@ export class AttendanceService {
   async todayStatus(userId: string) {
     const today = toDateOnly(new Date());
 
-    let attendance = await this.prisma.attendance.findUnique({
+    // Panelda grafik o'zgartirilgan bo'lishi mumkin — yozuvni yangilab olamiz
+    await this.refreshToday(userId);
+
+    const attendance = await this.prisma.attendance.findUnique({
       where: { userId_date: { userId, date: today } },
       include: { office: true },
     });
 
-    if (!attendance) {
-      await this.ensureDayRecords(new Date());
-      attendance = await this.prisma.attendance.findUnique({
-        where: { userId_date: { userId, date: today } },
-        include: { office: true },
-      });
-    }
-
     const office = attendance?.office ?? (await this.schedules.defaultOffice());
+
+    // Hozirgacha to'plangan kechikish — hodim kechiksa jonli ko'rinib turadi
+    const pendingMinutesLate =
+      attendance && !attendance.checkInAt && attendance.status === AttendanceStatus.PENDING
+        ? Math.max(0, Math.round((Date.now() - attendance.expectedStartAt.getTime()) / 60000))
+        : 0;
 
     return {
       date: dateKey(today),
@@ -538,6 +586,7 @@ export class AttendanceService {
       windowClosesAt: attendance?.windowClosesAt ?? null,
       checkInAt: attendance?.checkInAt ?? null,
       minutesLate: attendance?.minutesLate ?? 0,
+      pendingMinutesLate,
       canCheckIn: attendance?.status === AttendanceStatus.PENDING && !attendance?.checkInAt,
       office: office
         ? {

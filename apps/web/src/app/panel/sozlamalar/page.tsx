@@ -112,7 +112,7 @@ function Schedules() {
 
             <div className="muted grid grid-cols-3 gap-2 border-t pt-2 text-[11px]" style={{ borderColor: 'var(--border)' }}>
               <span>Kechikish chegarasi: {schedule.graceMinutes} daq</span>
-              <span>Oyna: {schedule.windowMinutes} daq</span>
+              <span>Rahbarga xabar: {schedule.windowMinutes} daq</span>
               <span>Eslatma: {schedule.reminderMinutes} daq</span>
             </div>
 
@@ -228,14 +228,16 @@ function ScheduleModal({ schedule, onClose, onSaved }: any) {
             <p className="muted mt-1 text-[10px]">Shu vaqtgacha "vaqtida" hisoblanadi</p>
           </div>
           <div>
-            <label className="label text-xs">Belgilanish oynasi (daq)</label>
+            <label className="label text-xs">Rahbarga xabar (daq)</label>
             <input
               type="number"
               value={form.windowMinutes}
               onChange={(e) => setForm({ ...form, windowMinutes: Number(e.target.value) })}
               className="input"
             />
-            <p className="muted mt-1 text-[10px]">Keyin "belgilanmadi" yoziladi</p>
+            <p className="muted mt-1 text-[10px]">
+              Shundan keyin belgilanmaganlar ro'yxati rahbarga boradi
+            </p>
           </div>
           <div>
             <label className="label text-xs">Eslatma (daq)</label>

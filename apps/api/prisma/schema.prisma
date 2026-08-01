@@ -224,10 +224,11 @@ model WorkSchedule {
   description String?
   isDefault   Boolean @default(false)
 
-  // Belgilanish oynasi
+  // Belgilanish oynasi ish kuni oxirigacha ochiq turadi (endTime).
+  // Quyidagilar faqat kechikishni baholash va xabar berish uchun.
   graceMinutes    Int @default(15) // Necha daqiqagacha kechikish "vaqtida" hisoblanadi
-  windowMinutes   Int @default(15) // Belgilanish oynasi shu vaqtdan keyin yopiladi
-  reminderMinutes Int @default(10) // Necha daqiqadan keyin eslatma yuboriladi
+  windowMinutes   Int @default(15) // Shundan keyin rahbarga belgilanmaganlar ro'yxati boradi
+  reminderMinutes Int @default(10) // Necha daqiqadan keyin hodimga eslatma yuboriladi
 
   requireCheckOut Boolean @default(false) // Ish oxirida ham belgilanish talab qilinsinmi
 
@@ -314,7 +315,7 @@ model Attendance {
   date   DateTime @db.Date
 
   expectedStartAt DateTime // Shu kun uchun rejadagi boshlanish vaqti
-  windowClosesAt  DateTime // Belgilanish oynasi yopiladigan vaqt
+  windowClosesAt  DateTime // Ish kuni tugash payti — belgilanish shunda yopiladi
 
   status  AttendanceStatus @default(PENDING)
   flags   AttendanceFlag[] @default([])
