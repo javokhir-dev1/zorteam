@@ -21,6 +21,7 @@ import { EvaluationsModule } from './modules/evaluations/evaluations.module';
 import { ShowsModule } from './modules/shows/shows.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
 import { TasksModule } from './modules/tasks/tasks.module';
+import { TodosModule } from './modules/todos/todos.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { SocialModule } from './modules/social/social.module';
 import { HealthController } from './health.controller';
@@ -52,6 +53,7 @@ import { HealthController } from './health.controller';
     ShowsModule,
     FeedbackModule,
     TasksModule,
+    TodosModule,
     ReportsModule,
     SocialModule,
   ],
