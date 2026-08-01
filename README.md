@@ -206,6 +206,12 @@ Barcha muhim amallar (qo'lda tuzatish, rol o'zgartirish, tasdiqlash)
 
 ---
 
+## Serverga joylashtirish
+
+Ishlab chiqarish serveriga o'rnatish va yangilash bo'yicha qo'llanma — [DEPLOY.md](DEPLOY.md).
+
+---
+
 ## 2-bosqich rejasi
 
 - Native Android/iOS ilova (mock location va root aniqlash, offline rejim)
