@@ -125,6 +125,7 @@ model User {
   uploadedFiles      StoredFile[]      @relation("FileUploader")
   registrationsDecided RegistrationRequest[] @relation("RegistrationDecider")
   registration         RegistrationRequest?  @relation("RegistrationCreatedUser")
+  todos                Todo[]
 
   @@index([departmentId])
   @@index([status])
@@ -993,4 +994,19 @@ model Setting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+// Shaxsiy eslatmalar ro'yxati — har bir hodim faqat o'zinikini ko'radi
+model Todo {
+  id     String  @id @default(cuid())
+  userId String
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  text String
+  done Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
 }
