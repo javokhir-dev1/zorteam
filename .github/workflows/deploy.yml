@@ -1,0 +1,43 @@
+# ============================================================
+#  main tarmog'iga push bo'lishi bilan serverda avtomatik deploy
+#
+#  Kerakli secretlar (Settings → Secrets and variables → Actions):
+#    SSH_HOST  — server IP yoki domen
+#    SSH_USER  — SSH foydalanuvchi (root)
+#    SSH_KEY   — maxfiy kalit (to'liq matn, BEGIN/END qatorlari bilan)
+#    SSH_PORT  — ixtiyoriy, standart 22
+# ============================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Kerak bo'lganda Actions sahifasidan qo'lda ham ishga tushiriladi
+  workflow_dispatch:
+
+# Ketma-ket push'lar bir vaqtda deploy qilmasligi uchun
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Serverda deploy skriptini ishga tushirish
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+            -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            'cd /root/zor_team && ./scripts/deploy-pm2.sh'
